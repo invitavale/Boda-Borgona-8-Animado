@@ -1,287 +1,163 @@
 // Variables globales
-let isPlaying = false;          // la música está sonando
-let musicStarted = false;       // la música ya arrancó
-let musicUnlocked = false;      // (se mantiene por compatibilidad)
+let isPlaying = false;
 let currentSlide = 0;
 let totalSlides = 0;
-let carouselTimer = null;
+
+// Animación de entrada del título "Primero nos casamos" en la portada
+function revealHeroTitle() {
+    document.body.classList.remove('hero-revealed');
+    void document.body.offsetWidth; // reinicia la animación si se llama de nuevo
+    document.body.classList.add('hero-revealed');
+}
+
+// Intro: sobre en video. El toque para abrirlo es el "detonante": en ese
+// mismo gesto arranca el video y la música de fondo (así lo exigen iPhone,
+// Android y todos los navegadores). Al terminar hay un destello dorado y la
+// invitación entra con un zoom suave de la portada.
+function setupIntroEnvelope() {
+    const overlay = document.getElementById('introOverlay');
+    const video = document.getElementById('introVideo');
+    const skip = document.getElementById('introSkip');
+    if (!overlay || !video) { enterInvitation(); return; }
+
+    let started = false;
+    let finished = false;
+    document.documentElement.style.overflow = 'hidden';
+
+    function finishIntro() {
+        if (finished) return;
+        finished = true;
+        overlay.classList.add('is-ending');
+        setTimeout(function() {
+            overlay.classList.add('is-hidden');
+            document.documentElement.style.overflow = '';
+            try { video.pause(); } catch (e) {}
+            enterInvitation();
+            setTimeout(function() { overlay.remove(); }, 1200);
+        }, 700);
+    }
+
+    // Respaldo: si el teléfono/navegador no reproduce el video, se muestra
+    // la misma animación del sobre como imagen animada (funciona en todos).
+    let usingAnim = false;
+    function useAnimFallback() {
+        if (usingAnim || finished) return;
+        usingAnim = true;
+        const anim = document.getElementById('introAnim');
+        if (!anim) { finishIntro(); return; }
+        try { video.pause(); } catch (e) {}
+        video.style.display = 'none';
+        anim.hidden = false;
+        anim.src = anim.getAttribute('data-src');
+        setTimeout(finishIntro, 7400);
+    }
+
+    function start() {
+        if (started) return;
+        started = true;
+        overlay.classList.add('is-playing');
+        startMusic(); // dentro del gesto del usuario
+        video.muted = true; // la canción reemplaza el sonido del video
+        let p;
+        try { p = video.play(); } catch (e) { useAnimFallback(); return; }
+        if (p && p.catch) p.catch(useAnimFallback);
+        // Si en 1.2 s el video no avanzó, usar la animación
+        setTimeout(function() {
+            if (!finished && !usingAnim && video.currentTime < 0.1) useAnimFallback();
+        }, 1200);
+    }
+
+    overlay.addEventListener('click', start);
+
+    // Termina un poco antes del final para encadenar con el destello
+    video.addEventListener('timeupdate', function() {
+        if (video.duration && video.currentTime >= video.duration - 0.6) finishIntro();
+    });
+    video.addEventListener('ended', finishIntro);
+    video.addEventListener('error', function() { if (started) useAnimFallback(); });
+
+    if (skip) {
+        skip.addEventListener('click', function(e) {
+            e.stopPropagation();
+            startMusic(); // por si saltan antes de que arranque
+            finishIntro();
+        });
+    }
+}
+
+function enterInvitation() {
+    document.body.classList.add('invite-enter');
+    revealHeroTitle();
+    const mp = document.getElementById('musicPlayer');
+    if (mp) mp.style.display = 'block';
+}
+
+// Música de fondo (archivo propio)
+function startMusic() {
+    const music = document.getElementById('bgMusic');
+    if (!music) return;
+    music.volume = 0.85;
+    const p = music.play();
+    if (p && p.then) {
+        p.then(function() { isPlaying = true; updateMusicIcon(); })
+         .catch(function() { isPlaying = false; updateMusicIcon(); });
+    }
+}
+
+function setupMusic() {
+    const music = document.getElementById('bgMusic');
+    const toggle = document.getElementById('musicToggle');
+    if (!music) return;
+    music.addEventListener('play', function() { isPlaying = true; updateMusicIcon(); });
+    music.addEventListener('pause', function() { isPlaying = false; updateMusicIcon(); });
+    if (toggle) toggle.addEventListener('click', toggleMusic);
+    // Pausar al salir de la pestaña y retomar al volver
+    let wasPlaying = false;
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) { wasPlaying = !music.paused; music.pause(); }
+        else if (wasPlaying) { music.play().catch(function() {}); }
+    });
+}
+
+// Efecto elegante al hacer scroll: el contenido de cada sección aparece
+// subiendo suavemente y enfocándose.
+function setupScrollReveal() {
+    if (!('IntersectionObserver' in window)) return;
+    const items = document.querySelectorAll('.content section > *:not(.section-divider), .content .footer-content');
+    const io = new IntersectionObserver(function(entries) {
+        entries.forEach(function(entry) {
+            if (entry.isIntersecting) {
+                entry.target.classList.add('is-visible');
+                io.unobserve(entry.target);
+            }
+        });
+    }, { threshold: 0.15, rootMargin: '0px 0px -8% 0px' });
+    items.forEach(function(el) {
+        const idx = Array.prototype.indexOf.call(el.parentNode.children, el);
+        el.style.transitionDelay = Math.min(idx, 4) * 0.12 + 's';
+        el.classList.add('reveal');
+        io.observe(el);
+    });
+}
 
 // Inicializar cuando el DOM esté listo
 document.addEventListener('DOMContentLoaded', function() {
     initializeCountdown();
     initializeCarousel();
-    initializeIntro();
-    initializeMusicControls();
     initializeGuestGreeting();
-    initializeScrollReveal(); // después del saludo: la sección de invitados puede aparecer
+    setupIntroEnvelope();
+
+    setupMusic();
+    setupScrollReveal();
 });
 
-// =========================================================
-// Intro: sobre animado
-// - Se toca para abrir: en ese mismo toque arranca la música de fondo
-//   (el toque es lo que permite sonido en iPhone/Android)
-// - El video del sobre va sin sonido
-// - Al terminar el video entra directo a la invitación con una transición
-// =========================================================
-function initializeIntro() {
-    const intro = document.getElementById('intro');
-    const video = document.getElementById('introVideo');
-    if (!intro || !video) return;
 
-    let started = false;
-    let finished = false;
-
-    const start = () => {
-        if (started) return;
-        started = true;
-        intro.classList.add('is-playing');
-        intro.setAttribute('aria-label', 'Abriendo la invitación');
-
-        // La música empieza desde el inicio, dentro del toque
-        startMusic();
-
-        video.muted = true;
-        const p = video.play();
-        if (p && p.catch) {
-            // Si el video no se puede reproducir, se entra directo a la invitación
-            p.catch(() => finish());
-        }
-    };
-
-    const finish = () => {
-        if (finished) return;
-        finished = true;
-        startMusic(); // por si acaso no había arrancado
-        revealInvitation();
-    };
-
-    intro.addEventListener('click', start);
-    intro.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); start(); }
-    });
-
-    video.addEventListener('ended', finish);
-    video.addEventListener('error', () => { if (started) finish(); });
-
-    // Seguro: si el video se queda trabado, entrar igual
-    video.addEventListener('playing', () => {
-        const ms = ((video.duration || 8) - video.currentTime + 2.5) * 1000;
-        clearTimeout(video._safety);
-        video._safety = setTimeout(finish, ms);
-    });
-}
-
-// Transición elegante: el destello final del video se convierte en un velo de
-// luz cálida con destellos dorados, y la portada "se revela" desde la luz.
-function revealInvitation() {
-    const body = document.body;
-    window.scrollTo(0, 0);
-    body.classList.remove('intro-active');
-    // forzar reflow para que la animación arranque limpia
-    void body.offsetWidth;
-    body.classList.add('is-revealing');
-    playSparkles(3200);
-
-    const musicPlayer = document.getElementById('musicPlayer');
-    setTimeout(() => {
-        musicPlayer.style.display = 'block';
-        musicPlayer.classList.add('is-visible');
-    }, 2400);
-
-    setTimeout(() => {
-        body.classList.add('intro-done');
-        const video = document.getElementById('introVideo');
-        if (video) { video.pause(); video.removeAttribute('src'); video.load(); }
-    }, 3600);
-}
-
-// Destellos dorados que flotan durante la transición (canvas liviano)
-function playSparkles(duration) {
-    const canvas = document.getElementById('introSparkles');
-    if (!canvas || !canvas.getContext) return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-
-    const ctx = canvas.getContext('2d');
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    canvas.width = w * dpr; canvas.height = h * dpr;
-    ctx.scale(dpr, dpr);
-
-    const count = Math.round(Math.min(70, Math.max(35, (w * h) / 12000)));
-    const parts = Array.from({ length: count }, () => {
-        const angle = Math.random() * Math.PI * 2;
-        const speed = 0.25 + Math.random() * 1.1;
-        return {
-            x: w / 2 + (Math.random() - 0.5) * w * 0.35,
-            y: h * 0.46 + (Math.random() - 0.5) * h * 0.25,
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed - 0.5,
-            r: 0.8 + Math.random() * 2.2,
-            delay: Math.random() * 600,
-            life: 1400 + Math.random() * 1600,
-            hue: 38 + Math.random() * 10
-        };
-    });
-
-    const t0 = performance.now();
-    const frame = (now) => {
-        const t = now - t0;
-        ctx.clearRect(0, 0, w, h);
-        parts.forEach(p => {
-            const age = t - p.delay;
-            if (age < 0 || age > p.life) return;
-            const k = age / p.life;
-            const alpha = Math.sin(Math.PI * k) * 0.9;
-            const x = p.x + p.vx * age * 0.06;
-            const y = p.y + p.vy * age * 0.06;
-            const glow = ctx.createRadialGradient(x, y, 0, x, y, p.r * 4);
-            glow.addColorStop(0, `hsla(${p.hue}, 80%, 85%, ${alpha})`);
-            glow.addColorStop(0.4, `hsla(${p.hue}, 70%, 60%, ${alpha * 0.45})`);
-            glow.addColorStop(1, `hsla(${p.hue}, 70%, 55%, 0)`);
-            ctx.fillStyle = glow;
-            ctx.beginPath();
-            ctx.arc(x, y, p.r * 4, 0, Math.PI * 2);
-            ctx.fill();
-        });
-        if (t < duration) requestAnimationFrame(frame);
-        else ctx.clearRect(0, 0, w, h);
-    };
-    requestAnimationFrame(frame);
-}
-
-// =========================================================
-// Música (archivo propio, ya no YouTube)
-// =========================================================
-function getMusic() { return document.getElementById('bgMusic'); }
-
-// Se llama dentro del toque: deja el audio "autorizado" para que luego,
-// en el segundo 5, pueda sonar sin otro toque (iOS lo exige).
-function unlockMusic() {
-    const music = getMusic();
-    if (!music || musicUnlocked) return;
-    musicUnlocked = true;
-    music.muted = true;
-    const p = music.play();
-    if (p && p.then) {
-        p.then(() => { if (!musicStarted) { music.pause(); music.currentTime = 0; } })
-         .catch(() => {});
-    }
-}
-
-function startMusic() {
-    const music = getMusic();
-    if (!music || musicStarted) return;
-    musicStarted = true;
-    music.muted = false;
-
-    // Primero el play, directo dentro del toque (lo que exige iPhone/Safari).
-    // Volver al segundo 0 solo si ya había avanzado (p. ej. tras el
-    // desbloqueo en silencio); hacerlo antes de cargar podía fallar en Safari.
-    try { if (music.currentTime > 0.05) music.currentTime = 0; } catch (e) {}
-    let p = null;
-    try { p = music.play(); } catch (e) { p = Promise.reject(e); }
-    fadeInVolume(music, 1500);
-    isPlaying = true;
-    updateMusicIcon();
-
-    if (p && p.catch) {
-        p.catch(() => {
-            // El navegador no la dejó sonar: se reintenta con el próximo toque
-            // en cualquier parte y se muestra el botón de música.
-            musicStarted = false;
-            isPlaying = false;
-            updateMusicIcon();
-            retryMusicOnNextTouch();
-        });
-    }
-
-    // Seguro extra: si a los 2 s sigue en pausa, mostrar el botón para activarla
-    setTimeout(() => {
-        if (music.paused && !userPausedMusic) {
-            isPlaying = false;
-            updateMusicIcon();
-            showMusicButton(true);
-        }
-    }, 2000);
-}
-
-let userPausedMusic = false;
-let retryArmed = false;
-
-function retryMusicOnNextTouch() {
-    showMusicButton(true);
-    if (retryArmed) return;
-    retryArmed = true;
-    const handler = (e) => {
-        // Si tocan el botón de música, ese botón ya se encarga
-        if (e.target && e.target.closest && e.target.closest('#musicToggle')) return;
-        document.removeEventListener('touchend', handler, true);
-        document.removeEventListener('click', handler, true);
-        retryArmed = false;
-        startMusic();
-    };
-    document.addEventListener('touchend', handler, true);
-    document.addEventListener('click', handler, true);
-}
-
-function showMusicButton(attention) {
-    const mp = document.getElementById('musicPlayer');
-    if (!mp) return;
-    mp.style.display = 'block';
-    mp.classList.add('is-visible');
-    mp.classList.toggle('needs-tap', !!attention);
-}
-
-// Subida de volumen suave (en iPhone el volumen lo maneja el sistema y se ignora).
-// Con temporizador + seguro final: el volumen SIEMPRE termina en 1.
-function fadeInVolume(el, ms) {
-    try {
-        el.volume = 0.05;
-        const t0 = Date.now();
-        const timer = setInterval(() => {
-            const k = Math.min(1, (Date.now() - t0) / ms);
-            try { el.volume = Math.max(0.05, k); } catch (e) {}
-            if (k >= 1) clearInterval(timer);
-        }, 50);
-        setTimeout(() => { clearInterval(timer); try { el.volume = 1; } catch (e) {} }, ms + 300);
-    } catch (e) { /* sin control de volumen */ }
-}
-
-function initializeMusicControls() {
-    const music = getMusic();
-    const toggle = document.getElementById('musicToggle');
-    if (!music || !toggle) return;
-
-    toggle.addEventListener('click', toggleMusic);
-    music.addEventListener('play', () => { if (!music.muted) { isPlaying = true; updateMusicIcon(); } });
-    music.addEventListener('pause', () => { isPlaying = false; updateMusicIcon(); });
-
-    // Pausar si el invitado sale de la página y retomar al volver
-    let resumeOnReturn = false;
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-            resumeOnReturn = isPlaying;
-            if (isPlaying) music.pause();
-        } else if (resumeOnReturn) {
-            music.play().catch(() => {});
-        }
-    });
-}
 
 function toggleMusic() {
-    const music = getMusic();
+    const music = document.getElementById('bgMusic');
     if (!music) return;
-    if (isPlaying) {
-        userPausedMusic = true;
-        music.pause();
-    } else {
-        userPausedMusic = false;
-        musicStarted = true;
-        music.muted = false;
-        try { music.volume = 1; } catch (e) {}
-        music.play().catch(() => {});
-    }
-    showMusicButton(false);
+    if (music.paused) { music.play().catch(function() {}); }
+    else { music.pause(); }
 }
 
 function updateMusicIcon() {
@@ -307,7 +183,7 @@ function updateMusicIcon() {
 
 // Countdown
 function initializeCountdown() {
-    const targetDate = new Date('2027-03-19T16:00:00-04:00') // hora de República Dominicana.getTime();
+    const targetDate = new Date('2027-03-19T16:00:00').getTime();
     
     function updateCountdown() {
         const now = new Date().getTime();
@@ -353,14 +229,12 @@ function initializeCarousel() {
         nextBtn.addEventListener('click', () => {
             currentSlide = (currentSlide + 1) % totalSlides;
             updateCarousel();
-            startCarouselAutoplay();
         });
     }
     if (prevBtn) {
         prevBtn.addEventListener('click', () => {
             currentSlide = (currentSlide - 1 + totalSlides) % totalSlides;
             updateCarousel();
-            startCarouselAutoplay();
         });
     }
 
@@ -369,26 +243,10 @@ function initializeCarousel() {
     requestAnimationFrame(updateCarousel);
     setTimeout(updateCarousel, 200);
 
-    // Deslizar con el dedo en el celular
-    const trackContainer = track.parentElement;
-    let touchX = null;
-    trackContainer.addEventListener('touchstart', (e) => { touchX = e.touches[0].clientX; }, { passive: true });
-    trackContainer.addEventListener('touchend', (e) => {
-        if (touchX === null) return;
-        const dx = e.changedTouches[0].clientX - touchX;
-        touchX = null;
-        if (Math.abs(dx) < 40) return;
-        (dx < 0 ? nextBtn : prevBtn).click();
-    });
-
-    startCarouselAutoplay();
-}
-
-// Auto-play del carrusel (se reinicia cuando el invitado cambia de foto,
-// para que no salte justo después de tocar una flecha)
-function startCarouselAutoplay() {
-    clearInterval(carouselTimer);
-    carouselTimer = setInterval(nextSlide, 2500);
+    // Auto-play del carrusel
+    setInterval(() => {
+        nextSlide();
+    }, 2500);
 }
 
 function updateCarousel() {
@@ -504,7 +362,8 @@ function openLocation(location) {
     }
 }
 
-const PHOTO_ALBUM_URL = 'https://photos.app.goo.gl/p9PGQHWrvLG1Bpj28';
+// Álbum compartido de Google Fotos (antes: https://photos.app.goo.gl/p9PGQHWrvLG1Bpj28)
+const PHOTO_ALBUM_URL = 'https://photos.app.goo.gl/b2UVjmavA8Pwxa6X6';
 
 function sharePhotos() {
     // Abre el álbum compartido de Google Fotos en una pestaña nueva
@@ -518,20 +377,9 @@ function sharePhotos() {
     }
 }
 
+// Código de vestimenta: imagen flotante (vive en regalo-modal.js)
 function showDressCode() {
-    const modal = document.getElementById('dresscodeModal');
-    if (modal) {
-        modal.style.display = 'flex';
-    }
-}
-
-function closeDressCodeModal() {
-    // El click dentro de la tarjeta del modal usa stopPropagation(), así que
-    // esta función solo se dispara al hacer click en el fondo oscuro o en la X.
-    const modal = document.getElementById('dresscodeModal');
-    if (modal) {
-        modal.style.display = 'none';
-    }
+    if (window.openDressCodeModal) window.openDressCodeModal();
 }
 
 function showTips() {
@@ -548,22 +396,15 @@ function closeTipsModal() {
     }
 }
 
+// Regalos: el modal (datos bancarios / mesa de regalos) vive en regalo-modal.js
 function showGifts() {
-    const modal = document.getElementById('giftModal');
-    if (modal) {
-        modal.style.display = 'flex';
-    }
+    if (window.openGiftModal) window.openGiftModal();
 }
 
-function closeGiftModal(event) {
-    const modal = document.getElementById('giftModal');
-    if (modal) {
-        modal.style.display = 'none';
-    }
-}
-
+// Confirmación de asistencia (Google Form)
+// (antes: https://docs.google.com/forms/d/e/1FAIpQLSdIYoM33yAkMmS4DZCRVmO9_IE0gZT4eEw8cV0r2PgWlYE0Ag/viewform?usp=header)
 function confirmAttendance() {
-    window.open('https://docs.google.com/forms/d/e/1FAIpQLSdIYoM33yAkMmS4DZCRVmO9_IE0gZT4eEw8cV0r2PgWlYE0Ag/viewform?usp=header', '_blank', 'noopener');
+    window.open('https://docs.google.com/forms/d/e/1FAIpQLScxojtt9jqEa84t0NWAciUShVSkWZlxG8qITy1HFrg_ssM1qA/viewform?usp=publish-editor', '_blank', 'noopener');
 }
 
 // Sistema de Toast
@@ -605,9 +446,7 @@ function initializeGuestGreeting() {
     let names = [];
 
     if (invitadosParam) {
-        // URLSearchParams ya decodifica: un segundo decodeURIComponent rompía
-        // la página si un nombre traía el signo %
-        names = invitadosParam.split(',').map(n => n.trim()).filter(Boolean);
+        names = invitadosParam.split(',').map(n => decodeURIComponent(n.trim())).filter(Boolean);
     } else if (familiaParam) {
         names = [`Familia ${familiaParam.trim()}`];
     }
@@ -659,90 +498,3 @@ function initializeGuestGreeting() {
     clearCaches();
   }
 })();
-
-
-// =========================================================
-// Aparición elegante de la información al hacer scroll
-// Cada bloque sube suavemente desde un leve desenfoque; los elementos
-// hermanos aparecen en cascada y los separadores florales se abren
-// desde el centro. Al terminar, cada elemento recupera sus estilos
-// originales (hovers y animaciones propias siguen funcionando).
-// =========================================================
-function initializeScrollReveal() {
-    if (!('IntersectionObserver' in window)) return; // sin soporte: todo visible
-
-    const groups = [
-        // [selector, variante]
-        ['.content > .section-divider img', 'wipe'],
-        ['.guest-section', ''],
-        ['.content .section-title', 'title'],
-        ['.content .section-subtitle', ''],
-        ['.countdown-item', ''],
-        ['.event-card > *', ''],
-        ['.camera-icon', 'zoom'],
-        ['.carousel-container', 'zoom'],
-        ['.carousel-counter', ''],
-        ['.party-card', ''],
-        ['.gift-icon', 'zoom'],
-        ['.gifts-container > .btn-wedding', ''],
-        ['.whatsapp-icon', 'zoom'],
-        ['.rsvp-container > .btn-wedding', ''],
-        ['.footer-content > *', '']
-    ];
-
-    const targets = [];
-    groups.forEach(([sel, variant]) => {
-        document.querySelectorAll(sel).forEach(el => {
-            if (el.classList.contains('reveal')) return;
-            el.classList.add('reveal');
-            if (variant) el.classList.add('reveal--' + variant);
-            targets.push(el);
-        });
-    });
-
-    // Cascada: posición del elemento entre sus hermanos que también aparecen
-    targets.forEach(el => {
-        const siblings = Array.from(el.parentElement.children).filter(c => c.classList.contains('reveal'));
-        el.style.setProperty('--rd', Math.min(siblings.indexOf(el), 5));
-    });
-
-    document.documentElement.classList.add('js-reveal');
-
-    const cleanup = (el) => {
-        // Quitar las clases al terminar para devolver los estilos originales
-        el.classList.remove('reveal', 'reveal--zoom', 'reveal--title', 'reveal--wipe', 'is-visible');
-        el.style.removeProperty('--rd');
-    };
-
-    const io = new IntersectionObserver((entries) => {
-        entries.forEach(entry => {
-            if (!entry.isIntersecting) return;
-            const el = entry.target;
-            io.unobserve(el);
-            el.classList.add('is-visible');
-            const delay = (parseFloat(el.style.getPropertyValue('--rd')) || 0) * 130;
-            setTimeout(() => cleanup(el), delay + 1800);
-        });
-    }, { threshold: 0.12, rootMargin: '0px 0px -6% 0px' });
-
-    targets.forEach(el => io.observe(el));
-
-    // Al llegar al final de la página, mostrar lo que quede en pantalla
-    // (el pie de página no siempre alcanza a cruzar el margen del detector)
-    const revealAtBottom = () => {
-        const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 60;
-        if (!nearBottom) return;
-        targets.forEach(el => {
-            if (el.classList.contains('reveal') && !el.classList.contains('is-visible')) {
-                const r = el.getBoundingClientRect();
-                if (r.top < window.innerHeight && r.bottom > 0) {
-                    io.unobserve(el);
-                    el.classList.add('is-visible');
-                    const delay = (parseFloat(el.style.getPropertyValue('--rd')) || 0) * 130;
-                    setTimeout(() => cleanup(el), delay + 1800);
-                }
-            }
-        });
-    };
-    window.addEventListener('scroll', revealAtBottom, { passive: true });
-}
